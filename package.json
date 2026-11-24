@@ -1,0 +1,31 @@
+{
+  "name": "open-direct-video",
+  "version": "0.1.0",
+  "private": true,
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=22.19"
+  },
+  "scripts": {
+    "dev": "node --env-file-if-exists=.env server/index.mjs --dev",
+    "build": "vite build",
+    "start": "node --env-file-if-exists=.env server/index.mjs",
+    "test": "node --test",
+    "desktop": "npm run build && electron .",
+    "package": "npm run build && electron-packager . OpenDirect --app-bundle-id=org.opendirect.studio --out=release --overwrite --asar --ignore=\"^/(release|test|[.]github|[.]opendirect|[.]git|[.]env)\""
+  },
+  "dependencies": {
+    "express": "^5.1.0",
+    "zod": "^4.1.0"
+  },
+  "devDependencies": {
+    "@electron/packager": "^20.3.0",
+    "electron": "^45.4.1",
+    "lucide-static": "^1.79.0",
+    "three": "^0.180.0",
+    "vite": "^7.1.0"
+  },
+  "productName": "OpenDirect",
+  "main": "desktop/main.mjs"
+}
