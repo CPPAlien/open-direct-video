@@ -1,8 +1,10 @@
 import './style.css';
+import './library.css';
+import { createInstance, libraryItems, sizeLabel } from './library.js';
 import { duration, sampleShot, demoScene } from './scene.js';
 import { createViewport } from './viewport.js';
 
-const icons = import.meta.glob('/node_modules/lucide-static/icons/{aperture,arrow-down-to-line,arrow-up,box,check,chevron-down,circle-help,clapperboard,crosshair,film,focus,hard-drive,layers-3,loader-circle,orbit,pause,play,plus,rotate-ccw,scan-line,settings,skip-back,skip-forward,sparkles,triangle-alert,x}.svg', { eager: true, query: '?raw', import: 'default' });
+const icons = import.meta.glob('/node_modules/lucide-static/icons/{aperture,arrow-down-to-line,arrow-left,arrow-right,arrow-up,box,check,chevron-down,circle-help,clapperboard,crosshair,film,focus,folder-open,hard-drive,house,layers-3,loader-circle,orbit,pause,play,plus,rotate-ccw,scan-line,search,settings,skip-back,skip-forward,sparkles,triangle-alert,upload,x}.svg', { eager: true, query: '?raw', import: 'default' });
 const icon = name => icons['/node_modules/lucide-static/icons/' + name + '.svg'] ?? '';
 const esc = value => String(value ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]);
 const button = (id, glyph, label) => '<button type="button" id="' + id + '" class="icon" title="' + label + '" aria-label="' + label + '">' + icon(glyph) + '</button>';
@@ -10,7 +12,70 @@ const $ = id => document.getElementById(id);
 const timecode = time => [Math.floor(time / 60), Math.floor(time) % 60, Math.floor(time % 1 * 24)].map(v => String(v).padStart(2, '0')).join(':');
 const app = $('app');
 app.innerHTML = `
+<section class="workspace-home" id="workspace-home">
+  <aside class="library-sidebar">
+    <div class="library-brand"><span class="logo">${icon('aperture')}</span><strong>OpenDirect</strong></div>
+    <nav aria-label="工作区">
+      <button type="button" id="nav-home" aria-current="page">${icon('house')} 首页</button>
+      <button type="button" id="nav-library">${icon('box')} 3D 资产库</button>
+      <button type="button" id="nav-studio">${icon('clapperboard')} 场景工作区</button>
+    </nav>
+    <div class="nav-divider"></div>
+    <nav aria-label="应用"><button type="button" id="nav-settings">${icon('settings')} 设置</button></nav>
+    <div class="recent-label">最近打开</div>
+    <button type="button" id="recent-scene" class="recent-scene">${icon('folder-open')} <span id="recent-title"></span></button>
+    <div class="sidebar-footer">${icon('hard-drive')} 本地工作区 <i></i></div>
+  </aside>
+  <div class="library-surface">
+    <section id="home-pane" class="home-pane">
+      <div class="home-hero">
+        <h1>整理你的 <em>3D 资产</em></h1>
+        <p>导入模型、管理道具，用对话把它们搭成可预演的场景。</p>
+        <form id="home-form" class="home-composer">
+          <textarea id="home-prompt" rows="2" maxlength="4000" aria-label="场景创作指令" placeholder="描述一个场景，或说说想怎样改动当前镜头…"></textarea>
+          <div class="home-composer-actions">
+            <button type="button" id="home-import" class="circle-button" title="导入 GLB" aria-label="导入 GLB">${icon('plus')}</button>
+            <span class="home-mode">${icon('box')} 3D 场景</span>
+            <button type="submit" id="home-send" class="home-send" aria-label="发送场景创作指令" disabled>${icon('arrow-up')}</button>
+          </div>
+          <button type="button" id="home-current" class="home-current">${icon('folder-open')} <span id="home-title"></span> ${icon('chevron-down')}</button>
+        </form>
+      </div>
+      <section class="home-collection">
+        <div class="collection-header"><h2>我的 3D 资产</h2><button id="all-assets" type="button">查看全部 ${icon('arrow-right')}</button></div>
+        <div id="home-assets" class="asset-grid"></div>
+      </section>
+    </section>
+    <section id="library-pane" class="library-pane" hidden>
+      <div class="collection-header"><h1>3D 资产库</h1><button id="library-import" type="button" class="primary">${icon('upload')} 导入 GLB</button></div>
+      <div class="library-tools">
+        <div id="library-filters" class="library-filters" aria-label="筛选资产">
+          <button type="button" data-filter="all" aria-pressed="true">全部</button><button type="button" data-filter="imported">已导入</button><button type="button" data-filter="builtin">内置资产</button>
+        </div>
+        <label class="asset-search">${icon('search')} <input id="asset-search" type="search" placeholder="搜索资产" aria-label="搜索资产"></label>
+      </div>
+      <div id="library-assets" class="asset-grid"></div>
+    </section>
+  </div>
+</section>
+<input id="file-input" type="file" accept=".glb,model/gltf-binary" multiple hidden>
+<dialog id="asset-dialog" class="dialog asset-dialog">
+  <div class="dialog-head"><h2 id="asset-view-title"></h2>${button('close-asset','x','关闭资产详情')}</div>
+  <div id="asset-view-preview" class="asset-view-preview"></div>
+  <p id="asset-view-meta" class="muted"></p>
+  <p id="asset-error" class="form-error" role="alert" hidden></p>
+  <form id="asset-rename" class="asset-rename" hidden>
+    <label>资产名称<input id="asset-name" maxlength="80" required></label><button type="submit" class="outline">重命名</button>
+  </form>
+  <div class="dialog-actions">
+    <button type="button" id="asset-delete" class="ghost" hidden>移出资产库</button>
+    <button type="button" id="asset-download" class="outline" hidden>下载 GLB</button>
+    <button type="button" id="asset-add" class="primary">${icon('plus')} 添加到场景</button>
+  </div>
+</dialog>
+<div id="editor-shell" class="editor-shell" hidden>
 <header class="top">
+  <button id="back-home" type="button" class="icon" aria-label="返回首页" title="返回首页">${icon('arrow-left')}</button>
   <div class="brand"><span class="logo">${icon('aperture')}</span><strong>OpenDirect</strong></div>
   <span class="top-divider"></span><span id="project-title" class="project-title"></span>
   <div class="top-actions"><span id="save-status" role="status" class="save-status">${icon('hard-drive')} 本地项目</span>
@@ -68,6 +133,7 @@ app.innerHTML = `
     </div>
   </aside>
 </main>
+</div>
 <dialog id="video-dialog" class="dialog">
   <div class="dialog-head"><h2>${icon('film')} 生成视频</h2>${button('close-video','x','关闭')}</div>
   <p id="video-shot"></p>
@@ -101,11 +167,11 @@ app.innerHTML = `
 </dialog>
 <div id="toast" class="toast" role="status" hidden></div>
 `;
-let project = { revision: 0, scene: demoScene, history: [], jobs: [] };
+let project = { revision: 0, scene: demoScene, history: [], jobs: [], assets: [] };
 let config = {}, time = 0, mode = 'camera', selected = 'rover', playing = false, busy = false, loaded = false, captureActive = false, activeShot = -1;
 let toastTimer, playFrame, runController, jobPoll, dialogShot;
 const scene = () => project.scene;
-const viewport = createViewport($('viewport'), id => select(id));
+const viewport = createViewport($('viewport'), id => select(id), error => notify(error, true));
 
 async function api(path, options) {
   const response = await fetch('/api' + path, options);
@@ -128,6 +194,10 @@ function refreshDisabled() {
   $('send').disabled = !loaded || captureActive || (!runController && (busy || !$('prompt').value.trim()));
   $('send').innerHTML = icon(runController ? 'x' : 'arrow-up');
   $('send').setAttribute('aria-label', runController ? '取消 Agent 任务' : '发送');
+  for (const id of ['nav-studio','recent-scene','home-import','library-import','nav-settings','asset-add']) $(id).disabled = !loaded || busy || captureActive;
+  for (const id of ['asset-delete', 'asset-download']) $(id).disabled = busy || captureActive;
+  $('asset-rename').querySelector('button').disabled = busy || captureActive;
+  $('home-send').disabled = !loaded || busy || captureActive || !$('home-prompt').value.trim();
   $('video-playblast').disabled = captureActive || busy;
   $('submit-video').disabled = !config.video || captureActive || busy;
 }
@@ -191,7 +261,7 @@ function renderObjects() {
   $('inspector').innerHTML = item ? '<div class="section-label">变换</div><form id="object-form"><div class="axis">' +
     item.position.map((v, i) => number(v, 'position' + i, ['X', 'Y', 'Z'][i])).join('') +
     '</div><div class="appearance">' + number(item.rotation[1], 'yaw', 'Y°') +
-    '<label>色彩 <input type="color" name="color" value="' + esc(item.color) + '"></label></div>' +
+    (item.assetId ? '' : '<label>色彩 <input type="color" name="color" value="' + esc(item.color) + '"></label>') + '</div>' +
     '<div class="inspector-actions"><button type="submit" class="outline">应用变换</button><button id="remove-object" type="button" class="ghost">删除</button></div></form>' : '';
 }
 function renderTimeline() {
@@ -224,11 +294,12 @@ function renderConversation(turns = project.history, log = []) {
 }
 function showProject(next) {
   project = next;
-  $('project-title').textContent = scene().title;
+  for (const id of ['project-title', 'recent-title', 'home-title']) $(id).textContent = scene().title;
   viewport.load(scene());
   select(scene().objects.some(o => o.id === selected) ? selected : null);
   renderTimeline();
   renderConversation();
+  renderLibrary();
 }
 async function save(next) {
   if (!loaded || busy || captureActive) return;
@@ -238,6 +309,7 @@ async function save(next) {
     const previousRevision = project.revision;
     showProject(await (await api('/project', json('PUT', { revision: previousRevision, scene: next }))).json());
     $('save-status').innerHTML = icon('check') + ' 已保存至本地';
+    return true;
   } catch (error) { notify(error.message, true); }
   finally { setBusy(false); }
 }
@@ -495,7 +567,7 @@ $('inspector').onsubmit = event => {
     }
     item.position = position;
     item.rotation[1] = yaw;
-    item.color = data.get('color');
+    if (!item.assetId) item.color = data.get('color');
   });
 };
 $('inspector').onclick = event => {
@@ -531,8 +603,169 @@ $('shot-editor').onclick = event => {
 $('restore').onclick = () => {
   if (window.confirm('恢复示例将替换当前场景。继续吗？')) save(demoScene);
 };
+let libraryView = 'home', libraryFilter = 'all', assetFocus;
+const thumbnails = new Map();
+const pendingThumbs = new Set();
+function thumb(asset) {
+  if (thumbnails.has(asset.id) || pendingThumbs.has(asset.id) || captureActive) return;
+  pendingThumbs.add(asset.id);
+  void viewport.thumbnail(asset).then(url => {
+    thumbnails.set(asset.id, url);
+    for (const img of document.querySelectorAll('img[data-thumb="' + asset.id + '"]')) {
+      if (url) { img.src = url; img.hidden = false; }
+    }
+  }).catch(() => thumbnails.set(asset.id, '')).finally(() => pendingThumbs.delete(asset.id));
+}
+function assetCover(asset) {
+  return '<div class="asset-cover" style="background:' + esc(asset.backdrop) + '">' + icon('box') + '<img data-thumb="' + esc(asset.id) + '" alt=""' +
+    (thumbnails.get(asset.id) ? ' src="' + thumbnails.get(asset.id) + '"' : ' hidden') + '></div>';
+}
+function renderLibrary() {
+  const items = libraryItems(project.assets);
+  const query = $('asset-search').value.trim().toLowerCase();
+  const filtered = items.filter(asset => (libraryFilter === 'all' || asset.source === libraryFilter) &&
+    asset.name.toLowerCase().includes(query));
+  const cards = assets => assets.map(asset => '<button type="button" class="asset-card" data-asset="' + esc(asset.id) +
+    '">' + assetCover(asset) + '<strong>' + esc(asset.name) + '</strong><span>' +
+    (asset.source === 'imported' ? '本地导入 · ' + sizeLabel(asset.size) : '内置资产') +
+    '<small>' + (asset.source === 'imported' ? 'GLB' : '3D') + '</small></span></button>').join('');
+  $('home-assets').innerHTML = cards(items.slice(0, 4));
+  $('library-assets').innerHTML = cards(filtered) ||
+    '<p class="asset-empty">' + (query ? '没有与搜索匹配的资产。' : '这里还没有资产。点击「导入 GLB」开始。') + '</p>';
+  if (libraryView !== 'editor') for (const asset of libraryView === 'home' ? items.slice(0, 4) : filtered) thumb(asset);
+}
+function navigate(view) {
+  play(false);
+  libraryView = view;
+  $('workspace-home').hidden = view === 'editor';
+  $('editor-shell').hidden = view !== 'editor';
+  $('home-pane').hidden = view !== 'home';
+  $('library-pane').hidden = view !== 'library';
+  for (const id of ['home', 'library']) {
+    if (view === id) $('nav-' + id).setAttribute('aria-current', 'page');
+    else $('nav-' + id).removeAttribute('aria-current');
+  }
+  if (view !== 'editor') renderLibrary();
+  else requestAnimationFrame(() => viewport.setTime(time));
+}
+$('nav-home').onclick = $('back-home').onclick = () => navigate('home');
+$('nav-library').onclick = $('all-assets').onclick = () => navigate('library');
+$('nav-studio').onclick = $('recent-scene').onclick = $('home-current').onclick = () => navigate('editor');
+$('nav-settings').onclick = () => $('settings').click();
+$('home-prompt').oninput = refreshDisabled;
+$('home-form').onsubmit = event => {
+  event.preventDefault();
+  const prompt = $('home-prompt').value.trim();
+  if (!prompt || busy || !loaded) return;
+  navigate('editor');
+  $('prompt').value = prompt;
+  $('home-prompt').value = '';
+  $('agent-form').requestSubmit();
+};
+$('home-import').onclick = $('library-import').onclick = () => $('file-input').click();
+$('file-input').onchange = async event => {
+  const files = [...event.target.files];
+  event.target.value = '';
+  if (!files.length || busy) return;
+  setBusy(true);
+  const failures = [];
+  let imported = 0;
+  try {
+    for (const file of files) {
+      try {
+        if (!/\.glb$/i.test(file.name) || file.size > 40 * 1024 * 1024) throw Error('仅支持不超过 40 MB 的 GLB');
+        const asset = await (await api('/assets?name=' + encodeURIComponent(file.name.replace(/\.glb$/i, '').slice(0, 80)), {
+          method: 'POST', headers: { 'Content-Type': 'model/gltf-binary' }, body: file,
+        })).json();
+        project.assets.push(asset);
+        imported++;
+      } catch (error) { failures.push(file.name + '：' + error.message); }
+    }
+    navigate('library');
+    libraryFilter = 'all';
+    $('asset-search').value = '';
+    syncFilters();
+    renderLibrary();
+    notify(failures.length ? failures.join('；') : '已导入 ' + imported + ' 个 GLB 资产', !!failures.length);
+  } finally { setBusy(false); }
+};
+function syncFilters() {
+  for (const button of $('library-filters').querySelectorAll('[data-filter]')) {
+    button.setAttribute('aria-pressed', String(button.dataset.filter === libraryFilter));
+  }
+}
+$('library-filters').onclick = event => {
+  if (!event.target.dataset.filter) return;
+  libraryFilter = event.target.dataset.filter;
+  syncFilters();
+  renderLibrary();
+};
+$('asset-search').oninput = renderLibrary;
+function assetError(message) {
+  $('asset-error').textContent = message;
+  $('asset-error').hidden = false;
+}
+function showAsset(asset) {
+  assetFocus = asset;
+  $('asset-view-title').textContent = asset.name;
+  $('asset-view-preview').innerHTML = assetCover(asset);
+  $('asset-view-meta').textContent = asset.assetId ? 'GLB · ' + sizeLabel(asset.size) : '内置 3D 资产';
+  for (const id of ['asset-rename', 'asset-delete', 'asset-download']) $(id).hidden = !asset.assetId;
+  $('asset-name').value = asset.name;
+  $('asset-error').hidden = true;
+  if (!$('asset-dialog').open) $('asset-dialog').showModal();
+  thumb(asset);
+}
+$('home-assets').onclick = $('library-assets').onclick = event => {
+  const id = event.target.closest('[data-asset]')?.dataset.asset;
+  const asset = libraryItems(project.assets).find(item => item.id === id);
+  if (asset) showAsset(asset);
+};
+$('close-asset').onclick = () => $('asset-dialog').close();
+$('asset-rename').onsubmit = async event => {
+  event.preventDefault();
+  if (busy || !assetFocus?.assetId) return;
+  setBusy(true);
+  try {
+    const renamed = await (await api('/assets/' + assetFocus.id, json('PATCH', { name: $('asset-name').value }))).json();
+    project.assets = project.assets.map(asset => asset.id === renamed.id ? renamed : asset);
+    renderLibrary();
+    showAsset({ ...assetFocus, ...renamed });
+  } catch (error) { assetError(error.message); }
+  finally { setBusy(false); }
+};
+$('asset-delete').onclick = async () => {
+  if (busy || !assetFocus?.assetId || !window.confirm('从本地资产库移除「' + assetFocus.name + '」？原始导入文件不会被修改。')) return;
+  setBusy(true);
+  try {
+    await api('/assets/' + assetFocus.id, { method: 'DELETE' });
+    project.assets = project.assets.filter(asset => asset.id !== assetFocus.id);
+    $('asset-dialog').close();
+    renderLibrary();
+  } catch (error) { assetError(error.message); }
+  finally { setBusy(false); }
+};
+$('asset-download').onclick = async () => {
+  if (!assetFocus?.assetId) return;
+  try {
+    const response = await api('/assets/' + assetFocus.id + '/glb');
+    download(await response.blob(), assetFocus.name + '.glb');
+  } catch (error) { assetError(error.message); }
+};
+$('asset-add').onclick = async () => {
+  if (busy || !assetFocus) return;
+  const id = 'asset-' + crypto.randomUUID().slice(0, 8);
+  const asset = createInstance(assetFocus, id);
+  selected = id;
+  if (await changeScene(next => next.objects.push(asset))) {
+    $('asset-dialog').close();
+    navigate('editor');
+    setMode('orbit');
+    notify('已将「' + asset.name + '」添加到场景');
+  }
+};
 document.addEventListener('keydown', event => {
-  if (event.code === 'Space' && ['BODY', 'CANVAS'].includes(document.activeElement.tagName) && !$('video-dialog').open) {
+  if (event.code === 'Space' && ['BODY', 'CANVAS'].includes(document.activeElement.tagName) && libraryView === 'editor' && !document.querySelector('dialog[open]')) {
     event.preventDefault();
     play(!playing);
   }

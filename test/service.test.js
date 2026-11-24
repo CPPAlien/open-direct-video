@@ -6,6 +6,18 @@ import { join } from 'node:path';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
+function glbFixture(uri) {
+  const text = JSON.stringify({ asset: { version: '2.0' }, scenes: [{ nodes: [] }], ...(uri ? { buffers: [{ uri }] } : {}) });
+  const json = Buffer.from(text.padEnd(Math.ceil(text.length / 4) * 4, ' '));
+  const header = Buffer.alloc(20);
+  header.write('glTF');
+  header.writeUInt32LE(2, 4);
+  header.writeUInt32LE(header.length + json.length, 8);
+  header.writeUInt32LE(json.length, 12);
+  header.write('JSON', 16);
+  return Buffer.concat([header, json]);
+}
+
 test('local service persists atomic edits, hides secrets, and completes a video job against a mock ComfyUI service', async t => {
   const directory = await mkdtemp(join(tmpdir(), 'opendirect-test-'));
   t.after(() => rm(directory, { recursive: true, force: true }));
@@ -50,6 +62,25 @@ test('local service persists atomic edits, hides secrets, and completes a video 
   assert.equal(frames.at(-1).project.revision, 1);
   assert.equal((await request('/project', 'PUT', { revision: 0, scene: initial.scene })).status, 409);
   assert.equal(JSON.parse(await readFile(join(directory, 'project.json'), 'utf8')).revision, 1);
+  const upload = data => fetch(address + '/api/assets?name=Rover', { method: 'POST',
+    headers: { 'Content-Type': 'model/gltf-binary', 'X-OpenDirect-Desktop': 'test-desktop-secret' }, body: data });
+  assert.equal((await upload(glbFixture('https://example.com/model.bin'))).status, 400);
+  const fixture = glbFixture();
+  const addition = await upload(fixture);
+  assert.equal(addition.status, 201);
+  const asset = await addition.json();
+  assert.deepEqual(Buffer.from(await (await request('/assets/' + asset.id + '/glb')).arrayBuffer()), fixture);
+  const rename = await request('/assets/' + asset.id, 'PATCH', { name: 'Imported prop' });
+  assert.equal((await rename.json()).name, 'Imported prop');
+  const scene = frames.at(-1).project.scene;
+  scene.objects.push({ ...scene.objects[0], id: 'custom', shape: 'glb', assetId: asset.id });
+  assert.equal((await request('/project', 'PUT', { revision: 1, scene })).status, 200);
+  assert.equal((await request('/assets/' + asset.id, 'DELETE')).status, 409);
+  scene.objects.pop();
+  assert.equal((await request('/project', 'PUT', { revision: 2, scene })).status, 200);
+  assert.equal((await request('/assets/' + asset.id, 'DELETE')).status, 204);
+  assert.equal((await request('/assets/' + asset.id + '/glb')).status, 404);
+
   const configured = await request('/settings', 'PUT', { llmUrl: '', llmModel: '', llmKey: 'fixture-secret',
     comfyUrl: 'http://127.0.0.1:' + comfy.address().port, workflowPath: workflow });
   assert.equal(configured.status, 200);

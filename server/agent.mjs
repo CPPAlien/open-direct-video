@@ -8,7 +8,7 @@ const system = `你是 OpenDirect 的 3D 分镜导演。根据用户要求创作
 - {"kind":"object.remove","id":"..."}
 - {"kind":"shots.set","shots":[...]}
 - {"kind":"world.set","background":"#rrggbb","ground":"#rrggbb"}
-对象 shape 可用 box,sphere,cylinder,cone,torus,platform,rover,tower,rock。
+对象 shape 可用 box,sphere,cylinder,cone,torus,platform,rover,tower,rock。若已有 shape 为 glb 的对象，修改它时保留 assetId；仅能使用场景中已有的 assetId。
 位置 XYZ 用米，Y 向上，旋转用度。基本几何体以中心为原点，道具模型支持缩放。
 path 为按全片时间排序的 [{time,position:[x,y,z],yaw}]，静态物体用 []。
 镜头为 {id,name,duration,from:[x,y,z],to:[x,y,z],lookAt:[x,y,z],fov,targetId?}。

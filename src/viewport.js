@@ -1,5 +1,6 @@
 import * as THREE from 'three';
 import { OrbitControls } from 'three/addons/controls/OrbitControls.js';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { GLTFExporter } from 'three/addons/exporters/GLTFExporter.js';
 import { objectPose, sampleShot } from './scene.js';
 
@@ -22,6 +23,7 @@ function makeObject(object) {
   const group = new THREE.Group();
   group.name = object.name;
   group.userData.entityId = object.id;
+  if (shape === 'glb') return group;
   if (shape === 'rover') {
     box(group, [1.13, .44, 1.9], color, [0, 0, 0]);
     box(group, [.83, .46, .92], '#344751', [0, .39, .11]);
@@ -61,7 +63,7 @@ function makeObject(object) {
   return group;
 }
 
-export function createViewport(container, onSelect) {
+export function createViewport(container, onSelect, onError = () => {}) {
   const renderer = new THREE.WebGLRenderer({ antialias: true, preserveDrawingBuffer: true });
   renderer.setPixelRatio(Math.min(devicePixelRatio, 1.6));
   renderer.shadowMap.enabled = true;
@@ -99,6 +101,38 @@ export function createViewport(container, onSelect) {
   outline.visible = false;
   world.add(outline);
   const objects = new Map();
+  const loader = new GLTFLoader();
+  loader.manager.setURLModifier(url => {
+    if (/^(blob:|data:)/i.test(url)) return url;
+    throw Error('GLB 包含外部引用');
+  });
+  const loading = new Set();
+  function dispose(node) {
+    node.traverse(child => {
+      child.geometry?.dispose();
+      for (const material of Array.isArray(child.material) ? child.material : [child.material]) {
+        if (!material) continue;
+        for (const value of Object.values(material)) if (value?.isTexture) value.dispose();
+        material.dispose();
+      }
+    });
+  }
+  async function importAsset(id) {
+    const response = await fetch('/api/assets/' + id + '/glb');
+    if (!response.ok) throw Error('无法读取本地 GLB');
+    const { scene } = await loader.parseAsync(await response.arrayBuffer(), '');
+    scene.traverse(node => { if (node.isMesh) node.castShadow = node.receiveShadow = true; });
+    const bounds = new THREE.Box3().setFromObject(scene);
+    const center = bounds.getCenter(new THREE.Vector3());
+    const size = bounds.getSize(new THREE.Vector3());
+    const factor = 2 / (Math.max(size.x, size.y, size.z) || 1);
+    const model = new THREE.Group();
+    model.name = scene.name || 'Imported GLB';
+    scene.position.sub(new THREE.Vector3(center.x, bounds.isEmpty() ? 0 : bounds.min.y, center.z));
+    model.add(scene);
+    model.scale.setScalar(factor);
+    return model;
+  }
   let scene, selected, time = 0, mode = 'camera', exporting = false;
 
   const pose = (node, item, at) => {
@@ -107,7 +141,7 @@ export function createViewport(container, onSelect) {
     node.rotation.set(radians(item.rotation[0]), radians(yaw), radians(item.rotation[2]));
   };
   function draw(at = time, view = mode) {
-    if (!scene) return;
+    if (!scene || (!exporting && (!container.clientWidth || !container.clientHeight))) return;
     for (const item of scene.objects) pose(objects.get(item.id), item, at);
     const shot = sampleShot(scene, at);
     camera.position.set(...shot.position);
@@ -187,7 +221,7 @@ export function createViewport(container, onSelect) {
     load(next) {
       scene = next;
       for (const node of objects.values()) {
-        node.traverse(child => { child.geometry?.dispose(); child.material?.dispose(); });
+        dispose(node);
         root.remove(node);
       }
       objects.clear();
@@ -198,6 +232,20 @@ export function createViewport(container, onSelect) {
         const node = makeObject(object);
         objects.set(object.id, node);
         root.add(node);
+        if (object.assetId) {
+          const task = importAsset(object.assetId).then(model => {
+            if (objects.get(object.id) === node) {
+              node.add(model);
+              if (!exporting) draw();
+            } else dispose(model);
+          }).catch(error => {
+            if (objects.get(object.id) !== node) return;
+            mesh(node, new THREE.BoxGeometry(1, 1, 1), '#b55555', [0, .5, 0]);
+            resize();
+            onError('加载 ' + object.name + ' 失败：' + error.message);
+          }).finally(() => loading.delete(task));
+          loading.add(task);
+        }
       }
       resize();
     },
@@ -208,7 +256,31 @@ export function createViewport(container, onSelect) {
       const rounded = vector => vector.toArray().map(value => +value.toFixed(3));
       return { position: rounded(editCamera.position), target: rounded(controls.target) };
     },
+    async thumbnail(asset) {
+      const stage = new THREE.Scene();
+      stage.background = new THREE.Color(asset.backdrop ?? '#e4e9ed');
+      const subject = asset.assetId ? await importAsset(asset.assetId) : makeObject(asset);
+      if (exporting) { dispose(subject); return ''; }
+      const bounds = new THREE.Box3().setFromObject(subject);
+      if (bounds.isEmpty()) { dispose(subject); return ''; }
+      const center = bounds.getCenter(new THREE.Vector3());
+      const extents = bounds.getSize(new THREE.Vector3());
+      const radius = Math.max(...extents.toArray()) * .75 || 1;
+      const view = new THREE.PerspectiveCamera(38, 16 / 9, .01, 200);
+      view.position.copy(center).add(new THREE.Vector3(1.65, .96, 1.95).multiplyScalar(radius));
+      view.lookAt(center);
+      const key = new THREE.DirectionalLight('#fff2d9', 2.8);
+      key.position.set(-3, 5, 4);
+      stage.add(subject, new THREE.HemisphereLight('#ffffff', '#84929b', 2.5), key);
+      renderer.setPixelRatio(1);
+      renderer.setSize(384, 216, false);
+      try {
+        renderer.render(stage, view);
+        return canvas.toDataURL('image/jpeg', .82);
+      } finally { dispose(subject); restore(); }
+    },
     async capture(start, length, withClip, progress) {
+      await Promise.all([...loading]);
       prepare();
       try {
         draw(start, 'camera');
@@ -219,6 +291,7 @@ export function createViewport(container, onSelect) {
       } finally { restore(); }
     },
     async exportGlb() {
+      await Promise.all([...loading]);
       draw(0);
       try {
         const tracks = scene.objects.flatMap(item => {

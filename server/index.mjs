@@ -1,6 +1,6 @@
 import express from 'express';
 import { randomUUID } from 'node:crypto';
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rename, unlink, writeFile } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Readable } from 'node:stream';
@@ -8,12 +8,15 @@ import { z } from 'zod';
 import { auditScene, demoScene, sceneSchema } from '../src/scene.js';
 import { runAgent } from './agent.mjs';
 import { localDirect } from './local-director.mjs';
+import { assetId, assetName, maxAssetBytes, validateGlb } from './assets.mjs';
 import { queueVideo, videoFile, videoStatus } from './comfy.mjs';
 
 const root = fileURLToPath(new URL('../', import.meta.url));
 const directory = resolve(process.env.OPENDIRECT_DATA || resolve(root, '.opendirect'));
 const projectPath = resolve(directory, 'project.json');
 const settingsPath = resolve(directory, 'settings.json');
+const modelsDirectory = resolve(directory, 'assets');
+const modelPath = id => resolve(modelsDirectory, id + '.glb');
 const providerUrl = z.string().max(300).url().refine(value => {
   const url = URL.parse(value);
   return !!url && ['http:', 'https:'].includes(url.protocol) && !url.username && !url.password && !url.search && !url.hash;
@@ -43,16 +46,17 @@ const allowed = new Set();
 const desktop = process.env.OPENDIRECT_DESKTOP;
 const runId = /^[\w-]{1,80}$/;
 const promptSchema = z.string().trim().min(1).max(4000);
-const fresh = () => ({ revision: 0, scene: demoScene, history: [], jobs: [] });
+const fresh = () => ({ revision: 0, scene: demoScene, history: [], jobs: [], assets: [] });
 let project;
 try {
   project = JSON.parse(await readFile(projectPath, 'utf8'));
   sceneSchema.parse(project.scene);
+  project.assets ??= [];
 } catch (error) {
   if (error.code !== 'ENOENT') throw error;
   project = fresh();
 }
-await mkdir(directory, { recursive: true });
+await mkdir(modelsDirectory, { recursive: true });
 async function saveJson(path, value) {
   const tmp = path + '.' + randomUUID() + '.tmp';
   await writeFile(tmp, JSON.stringify(value, null, 2), { mode: 0o600 });
@@ -72,6 +76,9 @@ function update(change) {
 function commit(revision, scene, message, signal) {
   return update(current => {
     signal?.throwIfAborted();
+    if (scene.objects.some(item => item.assetId && !current.assets.some(asset => asset.id === item.assetId))) {
+      throw Object.assign(Error('场景引用了不存在的本地 GLB 资产'), { status: 409 });
+    }
     if (current.revision !== revision) throw Object.assign(Error('场景已更新，请同步后重试'), { status: 409 });
     return { ...current, revision: revision + 1, scene,
       history: message ? [...current.history, ...message].slice(-40) : current.history };
@@ -90,6 +97,47 @@ app.use((req, res, next) => {
 });
 app.use('/api', express.json({ limit: '45mb' }));
 app.get('/api/project', (_req, res) => res.json(project));
+app.post('/api/assets', express.raw({ type: 'model/gltf-binary', limit: maxAssetBytes }), async (req, res) => {
+  const name = assetName.parse(req.query.name);
+  validateGlb(req.body);
+  const asset = { id: randomUUID(), name, size: req.body.length, createdAt: new Date().toISOString() };
+  await writeFile(modelPath(asset.id), req.body, { mode: 0o600, flag: 'wx' });
+  try {
+    await update(current => {
+      if (current.assets.length >= 100) throw Object.assign(Error('本地资产库最多保存 100 个 GLB'), { status: 409 });
+      return { ...current, assets: [...current.assets, asset] };
+    });
+  } catch (error) {
+    await unlink(modelPath(asset.id)).catch(() => {});
+    throw error;
+  }
+  res.status(201).json(asset);
+});
+app.get('/api/assets/:id/glb', (req, res) => {
+  const asset = project.assets.find(item => item.id === req.params.id);
+  if (!asset) return res.sendStatus(404);
+  res.type('model/gltf-binary');
+  if (req.query.download === '1') res.attachment(asset.name + '.glb').type('model/gltf-binary');
+  res.sendFile(modelPath(asset.id), { cacheControl: false, acceptRanges: false });
+});
+app.patch('/api/assets/:id', async (req, res) => {
+  const id = assetId.parse(req.params.id), name = assetName.parse(req.body?.name);
+  const updated = await update(current => {
+    if (!current.assets.some(asset => asset.id === id)) throw Object.assign(Error('资产不存在'), { status: 404 });
+    return { ...current, assets: current.assets.map(asset => asset.id === id ? { ...asset, name } : asset) };
+  });
+  res.json(updated.assets.find(asset => asset.id === id));
+});
+app.delete('/api/assets/:id', async (req, res) => {
+  const id = assetId.parse(req.params.id);
+  await update(current => {
+    if (!current.assets.some(asset => asset.id === id)) throw Object.assign(Error('资产不存在'), { status: 404 });
+    if (current.scene.objects.some(item => item.assetId === id)) throw Object.assign(Error('此资产仍被场景使用，请先从场景移除'), { status: 409 });
+    return { ...current, assets: current.assets.filter(asset => asset.id !== id) };
+  });
+  await unlink(modelPath(id)).catch(error => { if (error.code !== 'ENOENT') console.error(error.message); });
+  res.sendStatus(204);
+});
 app.get('/api/config', (_req, res) => res.json({ agent: hasModel(), model: settings.llmModel, video: !!settings.workflowPath }));
 app.get('/api/settings', (_req, res) => res.json(publicSettings()));
 let settingsQueue = Promise.resolve();

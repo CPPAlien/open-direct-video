@@ -6,9 +6,9 @@ const vec = z.tuple([n, n, n]);
 const color = z.string().regex(/^#[0-9a-f]{6}$/i);
 export const objectSchema = z.object({
   id, name: z.string().min(1).max(80),
-  shape: z.enum(['box', 'sphere', 'cylinder', 'cone', 'torus', 'platform', 'rover', 'tower', 'rock']),
+  shape: z.enum(['box', 'sphere', 'cylinder', 'cone', 'torus', 'platform', 'rover', 'tower', 'rock', 'glb']),
   position: vec, rotation: vec, scale: vec.refine(v => v.every(x => x > 0 && x <= 150)),
-  color, path: z.array(z.object({ time: z.number().min(0).max(60), position: vec, yaw: n })).max(32).default([]),
+  color, assetId: z.uuid().optional(), path: z.array(z.object({ time: z.number().min(0).max(60), position: vec, yaw: n })).max(32).default([]),
 });
 export const shotSchema = z.object({
   id, name: z.string().min(1).max(80), duration: z.number().min(0.5).max(20),
@@ -24,6 +24,7 @@ export const sceneSchema = z.object({
   }
   if (duration(scene) > 60) issue('总时长不能超过 60 秒');
   for (const object of scene.objects) {
+    if ((object.shape === 'glb') !== !!object.assetId) issue(object.id + ' 的 GLB 资产引用不完整');
     if (object.path.some((point, index) => index && point.time <= object.path[index - 1].time)) {
       issue(object.id + ' 的关键帧时间必须严格递增');
     }
